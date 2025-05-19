@@ -8,10 +8,13 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	requests "github.com/SamuelLeutner/fetch-student-data/api/Requests"
 	"github.com/SamuelLeutner/fetch-student-data/config"
 	"github.com/SamuelLeutner/fetch-student-data/models"
 	"github.com/SamuelLeutner/fetch-student-data/utils"
@@ -25,10 +28,9 @@ type SheetWriter interface {
 }
 
 type JacadClient struct {
-	Config *config.Config
-	Client *http.Client
-	Writer SheetWriter
-
+	Config      *config.Config
+	Client      *http.Client
+	Writer      SheetWriter
 	token       string
 	tokenExpiry time.Time
 	muAuth      sync.Mutex
@@ -157,8 +159,8 @@ func (c *JacadClient) FetchPage(ctx context.Context, endpoint string, page, page
 	return apiResp.Elements, apiResp.Page, nil
 }
 
-func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, periodoId string, status string) error {
-	log.Printf("Starting filtered enrollment fetch for PeriodoLetivo='%s', StatusMatricula='%s' (with context)...", periodoId, status)
+func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requests.FetchEnrollmentsRequest) error {
+	log.Printf("Starting filtered enrollment fetch for PeriodoLetivo='%d', StatusMatricula='%s' (with context)...", params.IdPeriodoLetivo, params.StatusMatricula)
 	startTime := time.Now()
 
 	headers := []string{
@@ -167,24 +169,23 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, periodoId st
 		"enrollDate", "activateDate", "createdDate",
 	}
 
-	sheetTabsMap, err := c.setupEnrollmentSheets(ctx, headers)
-	if err != nil {
-		return fmt.Errorf("failed to setup enrollment sheets: %w", err)
+	fetchParams := make(map[string]string)
+	if params.IdPeriodoLetivo != 0 {
+		fetchParams["idPeriodoLetivo"] = strconv.Itoa(params.IdPeriodoLetivo)
+	}
+	if params.StatusMatricula != "" {
+		fetchParams["statusMatricula"] = params.StatusMatricula
 	}
 
-	fetchParams := make(map[string]string)
-	if periodoId != "" {
-		fetchParams["idPeriodoLetivo"] = periodoId
-	}
-	if status != "" {
-		fetchParams["statusMatricula"] = status
+	sheetName, err := c.setupEnrollmentSheets(ctx, headers, params)
+	if err != nil {
+		return fmt.Errorf("failed to setup enrollment sheets: %w", err)
 	}
 
 	log.Println("Fetching initial page (0) to get total pages...")
 	firstPageElements, Page, err := c.FetchPage(ctx, c.Config.Endpoints["ENROLLMENTS"], 0, c.Config.PageSize, fetchParams)
 
 	if err != nil {
-
 		if ctx.Err() != nil {
 			return fmt.Errorf("fetching initial page cancelled: %w", ctx.Err())
 		}
@@ -208,7 +209,7 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, periodoId st
 	}
 
 	log.Printf("Writing %d enrollments from the initial page (0) to sheets", len(firstPageElements))
-	if writeErr := c.writeEnrollmentsToSheets(ctx, firstPageElements, sheetTabsMap, headers); writeErr != nil {
+	if writeErr := c.writeEnrollmentsToSheets(ctx, firstPageElements, sheetName, headers); writeErr != nil {
 		log.Printf("Error writing initial page data: %v", writeErr)
 
 	}
@@ -242,7 +243,7 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, periodoId st
 			if len(batchData) > 0 {
 				log.Printf("Writing %d enrollments from batch to sheets (with context)...", len(batchData))
 
-				if writeErr := c.writeEnrollmentsToSheets(ctx, batchData, sheetTabsMap, headers); writeErr != nil {
+				if writeErr := c.writeEnrollmentsToSheets(ctx, batchData, sheetName, headers); writeErr != nil {
 					log.Printf("Error writing batch data: %v", writeErr)
 				}
 			}
@@ -253,7 +254,6 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, periodoId st
 		c.logProgress(startTime, currentPage, totalPages, totalProcessed)
 
 		select {
-		case <-time.After(c.Config.MinProcessingTime):
 		case <-ctx.Done():
 			log.Printf("Process cancelled via context during sleep: %v", ctx.Err())
 			log.Printf("Process cancelled. Total enrollments processed before cancellation: %d", totalProcessed)
@@ -306,7 +306,6 @@ func (c *JacadClient) processBatchEnrollmentsFiltered(ctx context.Context, start
 			defer wg.Done()
 
 			for pageNum := range pagesToFetch {
-
 				select {
 				case <-ctx.Done():
 					log.Printf("Worker stopping due to context cancellation for page %d: %v", pageNum, ctx.Err())
@@ -347,7 +346,6 @@ func (c *JacadClient) processBatchEnrollmentsFiltered(ctx context.Context, start
 	}
 
 	wg.Wait()
-
 	close(dataChan)
 
 	for pageData := range dataChan {
@@ -377,8 +375,7 @@ func (c *JacadClient) processBatchEnrollmentsFiltered(ctx context.Context, start
 	return allData, nil
 }
 
-func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []models.Enrollment, sheetTabsMap map[int]string, headers []string) error {
-
+func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []models.Enrollment, sheetName string, headers []string) error {
 	if len(data) == 0 {
 		log.Println("No enrollments to write.")
 		return nil
@@ -388,12 +385,6 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 	buffersBySheetName := make(map[string][][]interface{})
 	orgCounts := make(map[string]int)
 
-	defaultSheetName, ok := sheetTabsMap[0]
-	if !ok {
-		log.Printf("Warning: Default sheet name with key 0 not found in sheetTabsMap. Using config default: %s", c.Config.DefaultOrgSheet)
-		defaultSheetName = c.Config.DefaultOrgSheet
-	}
-
 	for _, item := range data {
 		select {
 		case <-ctx.Done():
@@ -401,10 +392,7 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 			return fmt.Errorf("data organization cancelled: %w", ctx.Err())
 		default:
 		}
-		sheetName, ok := sheetTabsMap[item.OrgID]
-		if !ok {
-			sheetName = defaultSheetName
-		}
+
 		if _, exists := buffersBySheetName[sheetName]; !exists {
 			buffersBySheetName[sheetName] = make([][]interface{}, 0)
 		}
@@ -472,42 +460,104 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 	return nil
 }
 
-func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []string) (map[int]string, error) {
+func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []string, params *requests.FetchEnrollmentsRequest) (string, error) {
+	var sheetName string
+	orgName, found := config.GetOrganizationNameByID(params.OrgId)
 
-	sheetTabsMap := make(map[int]string)
-	sheetsToSetup := []string{}
+	// TODO: Get periodoLetivo name by ID and put in the sheet name
+	// periodoLetivoName, foundPeriodo := GetPeriodoNameByID(params.IdPeriodoLetivo)
 
-	for _, org := range c.Config.Organizations {
-		sheetName := fmt.Sprintf("Matrículas %s", org.Name)
-		sheetTabsMap[org.ID] = sheetName
-		sheetsToSetup = append(sheetsToSetup, sheetName)
+	if found {
+		sheetName = fmt.Sprintf("Matrículas %s %s | %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
+	} else {
+		sheetName = fmt.Sprintf("Matrículas %s %s | %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
+		log.Printf("Aviso: Organização com ID %d não encontrada. Usando nome de planilha padrão: '%s'.", params.IdPeriodoLetivo, config.AppConfig.DefaultOrgSheet)
 	}
-	defaultSheetName := c.Config.DefaultOrgSheet
-	sheetTabsMap[0] = defaultSheetName
-	sheetsToSetup = append(sheetsToSetup, defaultSheetName)
-	log.Printf("Setting up enrollment sheets: %s (with context)...", strings.Join(sheetsToSetup, ", "))
 
-	for _, sheetName := range sheetsToSetup {
-		select {
-		case <-ctx.Done():
-			log.Printf("Context cancelled during sheet setup for '%s': %v", sheetName, ctx.Err())
-			return nil, fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
-		default:
-		}
+	fmt.Println("Organization Name:", orgName)
+	fmt.Println("Found:", found)
+	fmt.Println("Sheet Name:", sheetName)
+	os.Exit(0)
 
-		err := c.Writer.EnsureSheetExists(ctx, sheetName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to ensure sheet '%s' exists: %w", sheetName, err)
-		}
+	select {
+	case <-ctx.Done():
+		log.Printf("Context cancelled during sheet setup for '%s': %v", sheetName, ctx.Err())
+		return "", fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
+	default:
+	}
 
-		if err := c.Writer.Clear(ctx, sheetName); err != nil {
-			return nil, fmt.Errorf("failed to clear sheet '%s': %w", sheetName, err)
-		}
+	err := c.Writer.EnsureSheetExists(ctx, sheetName)
+	if err != nil {
+		return "", fmt.Errorf("failed to ensure sheet '%s' exists: %w", sheetName, err)
+	}
 
-		if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
-			return nil, fmt.Errorf("failed to set headers in sheet '%s': %w", sheetName, err)
-		}
+	if err := c.Writer.Clear(ctx, sheetName); err != nil {
+		return "", fmt.Errorf("failed to clear sheet '%s': %w", sheetName, err)
+	}
+
+	if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
+		return "", fmt.Errorf("failed to set headers in sheet '%s': %w", sheetName, err)
 	}
 	log.Printf("All required sheets verified/created and configured.")
-	return sheetTabsMap, nil
+	return sheetName, nil
+}
+
+func (c *JacadClient) GetPeriodoNameByID(ctx context.Context, idPeriodoLetivo int) ([]models.Period, error) {
+	endpoint := c.Config.Endpoints["PROCESS_NOTICES"]
+	pageSize := config.AppConfig.PageSize
+
+	fetchParams := make(map[string]string)
+	fetchParams["idOrg"] = strconv.Itoa(idPeriodoLetivo)
+
+	// TODO: Think a for to make to reaquest for the both Status
+	// fetchParams["statusEdital"] = config.AppConfig.EditalStatus
+
+	periodo, err := c.FetchPeriod(ctx, endpoint, pageSize, fetchParams)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("fetching initial page cancelled: %w", ctx.Err())
+		}
+
+		return nil, fmt.Errorf("failed to fetch initial page to get total: %w", err)
+	}
+
+	return periodo, nil
+}
+
+func (c *JacadClient) FetchPeriod(ctx context.Context, endpoint string, pageSize int, params map[string]string) ([]models.Period, error) {
+	q := url.Values{}
+	q.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	for k, v := range params {
+		q.Set(k, v)
+	}
+
+	url := fmt.Sprintf("%s%s?%s", c.Config.APIBase, endpoint, q.Encode())
+
+	token, err := c.GetAuthToken(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("failed to get token due to context cancellation: %w", ctx.Err())
+		}
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"Content-Type":  "application/json",
+	}
+
+	body, err := c.MakeRequest(ctx, http.MethodGet, url, headers, nil)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("fetching period cancelled via context: %w", ctx.Err())
+		}
+		return nil, fmt.Errorf("error fetching from %s: %w", endpoint, err)
+	}
+
+	var apiResp models.APIResponse[models.Period]
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("error parsing API response. Error: %w", err)
+	}
+
+	return apiResp.Elements, nil
 }

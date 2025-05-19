@@ -3,6 +3,7 @@ module github.com/SamuelLeutner/fetch-student-data
 go 1.24.3
 
 require (
+	github.com/gofiber/fiber/v3 v3.0.0-beta.4
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/oauth2 v0.30.0
 	google.golang.org/api v0.232.0
@@ -17,7 +18,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.8.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gofiber/fiber/v3 v3.0.0-beta.4 // indirect
 	github.com/gofiber/schema v1.3.0 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-beta.8 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect

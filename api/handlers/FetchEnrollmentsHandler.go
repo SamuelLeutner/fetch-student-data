@@ -2,33 +2,41 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
+	requests "github.com/SamuelLeutner/fetch-student-data/api/Requests"
 	"github.com/SamuelLeutner/fetch-student-data/config"
 	"github.com/SamuelLeutner/fetch-student-data/services"
 	"github.com/gofiber/fiber/v3"
 )
 
-var params struct {
-	IdPeriodoLetivo string `json:"idPeriodoLetivo"`
-	StatusMatricula string `json:"statusMatricula"`
-}
-
 func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *config.Config) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		if params.IdPeriodoLetivo == "" {
-			log.Println("idPeriodoLetivo is missing")
+		params := new(requests.FetchEnrollmentsRequest)
+
+		if err := c.Bind().Body(params); err != nil {
+			log.Printf("Error parsing request body: %v", err)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"status":  "error",
-				"message": "idPeriodoLetivo is required",
+				"message": "Invalid request body",
+				"details": err.Error(),
+			})
+		}
+
+		if params.IdPeriodoLetivo == 0 {
+			log.Println("idPeriodoLetivo is missing from request body")
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  "error",
+				"message": "idPeriodoLetivo is required in the request body",
 			})
 		}
 
 		ctx, cancel := context.WithTimeout(c.Context(), 10*time.Minute)
 		defer cancel()
 
-		err := client.FetchEnrollmentsFiltered(ctx, params.IdPeriodoLetivo, params.StatusMatricula)
+		err := client.FetchEnrollmentsFiltered(ctx, params)
 		if err != nil {
 			log.Printf("Error during filtered enrollment fetch: %v", err)
 
@@ -49,7 +57,7 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"status":  "success",
-			"message": "Enrollments fetch and write initiated successfully (check logs for details)",
+			"message": fmt.Sprintf("Enrollments fetch and write initiated successfully for %d with status %s (check logs for details)", params.IdPeriodoLetivo, params.StatusMatricula),
 		})
 	}
 }

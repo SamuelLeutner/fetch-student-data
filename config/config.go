@@ -33,12 +33,12 @@ type Config struct {
 	PageSize            int
 	MaxPagesPerBatch    int
 	MaxParallelRequests int
-	MinProcessingTime   time.Duration
 	RetryDelay          time.Duration
 	MaxRetries          int
 	AuthTokenExpiry     time.Duration
 	SpreadsheetID       string
 	CredentialsFilePath string
+	EditalStatus        map[string]string
 }
 
 type Organization struct {
@@ -52,8 +52,9 @@ var AppConfig = Config{
 	SpreadsheetID:       "",
 	CredentialsFilePath: "",
 	Endpoints: map[string]string{
-		"AUTH":        "/auth/token",
-		"ENROLLMENTS": "/academico/matriculas",
+		"AUTH":            "/auth/token",
+		"ENROLLMENTS":     "/academico/matriculas",
+		"PROCESS_NOTICES": "/processo-seletivo/editais",
 	},
 	Organizations: map[string]Organization{
 		"EAD":            {ID: 20, Name: "EAD"},
@@ -65,11 +66,23 @@ var AppConfig = Config{
 		"CLINICA":        {ID: 18, Name: "Clínica Integrada"},
 	},
 	DefaultOrgSheet:     "Outras Matrículas",
-  PageSize:            500,
-  MaxPagesPerBatch:    50, 
-  MaxParallelRequests: 10, 
-  MinProcessingTime:   300 * time.Millisecond, 
-  RetryDelay:          2000 * time.Millisecond,
-  MaxRetries:          3,
-  AuthTokenExpiry:     15 * time.Minute,
+	PageSize:            500,
+	MaxPagesPerBatch:    50,
+	MaxParallelRequests: 10,
+	RetryDelay:          2000 * time.Millisecond,
+	MaxRetries:          3,
+	AuthTokenExpiry:     60 * time.Minute,
+	EditalStatus: map[string]string{
+		"ABERTO":     "ABERTO",
+		"AGUARDANDO": "AGUARDANDO",
+	},
+}
+
+func GetOrganizationNameByID(orgID int) (string, bool) {
+	for _, org := range AppConfig.Organizations {
+		if org.ID == orgID {
+			return org.Name, true
+		}
+	}
+	return "", false
 }
