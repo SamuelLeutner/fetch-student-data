@@ -196,7 +196,7 @@ func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc fun
 		if isRetryableSheetsError(err) && attempt < maxAttempts {
 			delay := baseDelay * time.Duration(1<<attempt)
 
-			log.Printf("⚠️ Sheets API operation '%s' failed (attempt %d/%d): %v. Waiting %s before retrying...", operationDesc, attempt+1, maxAttempts+1, err, delay)
+			log.Printf("Sheets API operation '%s' failed (attempt %d/%d): %v. Waiting %s before retrying...", operationDesc, attempt+1, maxAttempts+1, err, delay)
 
 			select {
 			case <-time.After(delay):

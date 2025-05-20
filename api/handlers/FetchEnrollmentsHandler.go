@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -17,7 +16,7 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 		params := new(requests.FetchEnrollmentsRequest)
 
 		if err := c.Bind().Body(params); err != nil {
-			log.Printf("Error parsing request body: %v", err)
+			log.Printf("Handler: Error parsing request body: %v", err)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"status":  "error",
 				"message": "Invalid request body",
@@ -26,7 +25,7 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 		}
 
 		if params.IdPeriodoLetivo == 0 {
-			log.Println("idPeriodoLetivo is missing from request body")
+			log.Println("Handler: idPeriodoLetivo is missing from request body")
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"status":  "error",
 				"message": "idPeriodoLetivo is required in the request body",
@@ -36,28 +35,56 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 		ctx, cancel := context.WithTimeout(c.Context(), 10*time.Minute)
 		defer cancel()
 
-		err := client.FetchEnrollmentsFiltered(ctx, params)
-		if err != nil {
-			log.Printf("Error during filtered enrollment fetch: %v", err)
+		log.Printf("Handler: Starting enrollment fetch operation for PeriodoLetivo %d...", params.IdPeriodoLetivo)
 
-			if ctx.Err() != nil {
-				return c.Status(fiber.StatusRequestTimeout).JSON(fiber.Map{
+		errChan := make(chan error, 1)
+
+		go func() {
+			log.Println("Handler Goroutine: Starting client.FetchEnrollmentsFiltered...")
+			err := client.FetchEnrollmentsFiltered(ctx, params)
+			log.Println("Handler Goroutine: client.FetchEnrollmentsFiltered finished.")
+			errChan <- err
+		}()
+
+		select {
+		case <-ctx.Done():
+			log.Printf("Handler: Context cancelled during fetch (timeout/client disconnect): %v", ctx.Err())
+
+			select {
+			case fetchErr := <-errChan:
+				if fetchErr != nil {
+					log.Printf("Handler: Fetch goroutine finished with error: %v", fetchErr)
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"status":  "error",
+						"message": "Fetch operation was cancelled and ended with error",
+						"details": fetchErr.Error(),
+					})
+				}
+			default:
+
+			}
+			return c.Status(fiber.StatusRequestTimeout).JSON(fiber.Map{
+				"status":  "error",
+				"message": "Fetch operation timed out or was cancelled by client",
+				"details": ctx.Err().Error(),
+			})
+
+		case fetchErr := <-errChan:
+			if fetchErr != nil {
+				log.Printf("Handler: Error during enrollment fetch: %v", fetchErr)
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"status":  "error",
-					"message": "Fetch operation timed out or was cancelled",
-					"details": err.Error(),
+					"message": "Failed to fetch enrollments",
+					"details": fetchErr.Error(),
 				})
 			}
 
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"status":  "error",
-				"message": "Failed to fetch or write enrollments",
-				"details": err.Error(),
+			log.Println("Handler: Enrollment fetch completed successfully. Sending OK response.")
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{
+				"status":  "success",
+				"message": "Enrollments fetched and written to sheet successfully!",
+				"sheet":   "Matrículas EAD ATIVA | 20252",
 			})
 		}
-
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"status":  "success",
-			"message": fmt.Sprintf("Enrollments fetch and write initiated successfully for %d with status %s (check logs for details)", params.IdPeriodoLetivo, params.StatusMatricula),
-		})
 	}
 }

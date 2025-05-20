@@ -38,7 +38,7 @@ type Config struct {
 	AuthTokenExpiry     time.Duration
 	SpreadsheetID       string
 	CredentialsFilePath string
-	EditalStatus        map[string]string
+	EditalStatus        []string
 }
 
 type Organization struct {
@@ -54,7 +54,7 @@ var AppConfig = Config{
 	Endpoints: map[string]string{
 		"AUTH":            "/auth/token",
 		"ENROLLMENTS":     "/academico/matriculas",
-		"PROCESS_NOTICES": "/processo-seletivo/editais",
+		"PROCESS_NOTICES": "/processo-seletivo/editais/",
 	},
 	Organizations: map[string]Organization{
 		"EAD":            {ID: 20, Name: "EAD"},
@@ -72,17 +72,17 @@ var AppConfig = Config{
 	RetryDelay:          2000 * time.Millisecond,
 	MaxRetries:          3,
 	AuthTokenExpiry:     60 * time.Minute,
-	EditalStatus: map[string]string{
-		"ABERTO":     "ABERTO",
-		"AGUARDANDO": "AGUARDANDO",
+	EditalStatus: []string{
+		"ABERTO",
+		"AGUARDANDO",
 	},
 }
 
-func GetOrganizationNameByID(orgID int) (string, bool) {
+func GetOrganizationNameByID(orgID int) string {
 	for _, org := range AppConfig.Organizations {
 		if org.ID == orgID {
-			return org.Name, true
+			return org.Name
 		}
 	}
-	return "", false
+	return ""
 }
