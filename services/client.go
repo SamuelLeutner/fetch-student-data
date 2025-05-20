@@ -465,13 +465,12 @@ func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []strin
 	orgName, found := config.GetOrganizationNameByID(params.OrgId)
 
 	// TODO: Get periodoLetivo name by ID and put in the sheet name
-	// periodoLetivoName, foundPeriodo := GetPeriodoNameByID(params.IdPeriodoLetivo)
-
+	periodoLetivoName, found := c.GetPeriodoNameByID(ctx, params.IdPeriodoLetivo)
 	if found {
-		sheetName = fmt.Sprintf("Matrículas %s %s | %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
+		sheetName = fmt.Sprintf("Matrículas %s %s | %d", orgName, params.StatusMatricula, periodoLetivoName)
 	} else {
-		sheetName = fmt.Sprintf("Matrículas %s %s | %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
-		log.Printf("Aviso: Organização com ID %d não encontrada. Usando nome de planilha padrão: '%s'.", params.IdPeriodoLetivo, config.AppConfig.DefaultOrgSheet)
+		sheetName = fmt.Sprintf("Matrículas %s %s | Id Periodo Letivo %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
+		log.Printf("Aviso: Organização com ID %d não encontrada. Usando nome de planilha padrão: '%s'.", periodoLetivoName, config.AppConfig.DefaultOrgSheet)
 	}
 
 	fmt.Println("Organization Name:", orgName)
@@ -502,7 +501,8 @@ func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []strin
 	return sheetName, nil
 }
 
-func (c *JacadClient) GetPeriodoNameByID(ctx context.Context, idPeriodoLetivo int) ([]models.Period, error) {
+// TODO: Implement this function to fetch the name of the period by ID with assyncronous requests
+func (c *JacadClient) GetPeriodoNameByID(ctx context.Context, idPeriodoLetivo int) ([]models.Period, bool) {
 	endpoint := c.Config.Endpoints["PROCESS_NOTICES"]
 	pageSize := config.AppConfig.PageSize
 
@@ -515,13 +515,13 @@ func (c *JacadClient) GetPeriodoNameByID(ctx context.Context, idPeriodoLetivo in
 	periodo, err := c.FetchPeriod(ctx, endpoint, pageSize, fetchParams)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("fetching initial page cancelled: %w", ctx.Err())
+			return nil, false
 		}
 
-		return nil, fmt.Errorf("failed to fetch initial page to get total: %w", err)
+		return nil, false
 	}
 
-	return periodo, nil
+	return periodo, true
 }
 
 func (c *JacadClient) FetchPeriod(ctx context.Context, endpoint string, pageSize int, params map[string]string) ([]models.Period, error) {
