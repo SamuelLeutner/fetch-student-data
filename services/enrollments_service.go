@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,13 +19,12 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 	log.Printf("Starting filtered enrollment fetch for PeriodoLetivo='%d', StatusMatricula='%s' (with context)...", params.IdPeriodoLetivo, params.StatusMatricula)
 	startTime := time.Now()
 
-	// TODO: Fix the names
 	headers := []string{
-		"id", "aluno", "ra", "curso",
-		"turma", "status", "periodo letivo",
-		"unidade fisica", "organizacao",
-		"id organizacao", "data matricula",
-		"data ativacao", "data criacao",
+		"idMatricula", "aluno", "ra", "curso",
+		"turma", "status", "periodoLetivo",
+		"unidadeFisica", "organizacao",
+		"idOrg", "dataMatricula",
+		"dataAtivacao", "dataCadastro",
 	}
 
 	fetchParams := make(map[string]string)
@@ -69,7 +69,6 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 	log.Printf("Writing %d enrollments from the initial page (0) to sheets", len(firstPageElements))
 	if writeErr := c.writeEnrollmentsToSheets(ctx, firstPageElements, sheetName, headers); writeErr != nil {
 		log.Printf("Error writing initial page data: %v", writeErr)
-
 	}
 	totalProcessed := len(firstPageElements)
 	currentPage := 1
@@ -249,33 +248,34 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 			orgCounts[sheetName] = 0
 		}
 		row := make([]interface{}, len(headers))
+
 		for i, field := range headers {
 			switch field {
-			case "id":
+			case "idMatricula":
 				row[i] = item.IdMatricula
-			case "student":
+			case "aluno":
 				row[i] = utils.GetStringOrEmpty(item.Aluno)
 			case "ra":
 				row[i] = utils.GetStringOrEmpty(item.RA)
-			case "course":
+			case "curso":
 				row[i] = utils.GetStringOrEmpty(item.Curso)
-			case "class":
+			case "turma":
 				row[i] = utils.GetStringOrEmpty(item.Turma)
 			case "status":
 				row[i] = utils.GetStringOrEmpty(item.Status)
-			case "academicTerm":
+			case "periodoLetivo":
 				row[i] = utils.GetStringOrEmpty(item.PeriodoLetivo)
-			case "physicalUnit":
+			case "unidadeFisica":
 				row[i] = utils.GetStringOrEmpty(item.UnidadeFisica)
-			case "organization":
+			case "organizacao":
 				row[i] = utils.GetStringOrEmpty(item.Organizacao)
-			case "orgID":
+			case "idOrg":
 				row[i] = item.OrgID
-			case "enrollDate":
+			case "dataMatricula":
 				row[i] = utils.GetTimeOrNilDate(item.DataMatricula)
-			case "activateDate":
+			case "dataAtivacao":
 				row[i] = utils.GetTimeOrNilDate(item.DataAtivacao)
-			case "createdDate":
+			case "dataCadastro":
 				row[i] = utils.GetTimeOrNilDate(item.DataCadastro)
 			default:
 				row[i] = ""
@@ -306,37 +306,104 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 }
 
 func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []string, params *requests.FetchEnrollmentsRequest) (string, error) {
-	var sheetName string
+	log.Printf("Starting setupEnrollmentSheets for OrgID: %d, AcademicPeriodID: %d, EnrollmentStatus: %s", params.OrgId, params.IdPeriodoLetivo, params.StatusMatricula)
 	orgName := config.GetOrganizationNameByID(params.OrgId)
 
-	// TODO: Implement this function to fetch the name of the period by ID with assyncronous requests
-	periodoLetivoName, found := c.GetPeriodoNameByID(ctx, params.OrgId, params.IdPeriodoLetivo)
-	if found && orgName != "" {
+	log.Println("Fetching academic period name asynchronously...")
+	periodoLetivoName, periodFound, err := c.fetchPeriodoLetivoNameAsync(ctx, params.OrgId, params.IdPeriodoLetivo)
+	if err != nil {
+		log.Printf("Critical error fetching academic period name: %v. Sheet setup aborted.", err)
+		return "", fmt.Errorf("failed to fetch academic period name (%w)", err)
+	}
+
+	log.Printf("Academic period name fetched: '%s', Found: %t", periodoLetivoName, periodFound)
+
+	var sheetName string
+	if periodFound && orgName != "" {
 		sheetName = fmt.Sprintf("Matrículas %s %s | %s", orgName, params.StatusMatricula, periodoLetivoName)
 	} else {
-		sheetName = fmt.Sprintf("Matrículas %s %s | Id Periodo Letivo %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
-		log.Printf("Aviso: Organização com ID %s não encontrada. Usando nome de planilha padrão: '%s'.", periodoLetivoName, config.AppConfig.DefaultOrgSheet)
+		logMessage := "Using default sheet name because "
+		var reasons []string
+		if orgName == "" {
+			reasons = append(reasons, fmt.Sprintf("organization with ID %d was not found", params.OrgId))
+		}
+		if !periodFound {
+			reasons = append(reasons, fmt.Sprintf("academic period with ID %d was not found", params.IdPeriodoLetivo))
+		}
+		log.Printf(logMessage+"%s.", strings.Join(reasons, " and "))
+
+		sheetName = fmt.Sprintf("Matrículas %s %s | Período ID %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
+	}
+	log.Printf("Sheet name set to: '%s'", sheetName)
+
+	if err := c.Writer.EnsureSheetExists(ctx, sheetName); err != nil {
+		if ctx.Err() != nil {
+			log.Printf("EnsureSheetExists for '%s' cancelled via context: %v", sheetName, ctx.Err())
+			return "", fmt.Errorf("sheet setup cancelled (ensure sheet): %w", ctx.Err())
+		}
+		return "", fmt.Errorf("failed to ensure sheet '%s' exists: %w", sheetName, err)
 	}
 
 	select {
 	case <-ctx.Done():
-		log.Printf("Context cancelled during sheet setup for '%s': %v", sheetName, ctx.Err())
+		log.Printf("Context cancelled after EnsureSheetExists for '%s': %v", sheetName, ctx.Err())
 		return "", fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
 	default:
 	}
 
-	err := c.Writer.EnsureSheetExists(ctx, sheetName)
-	if err != nil {
-		return "", fmt.Errorf("failed to ensure sheet '%s' exists: %w", sheetName, err)
-	}
-
 	if err := c.Writer.Clear(ctx, sheetName); err != nil {
+		if ctx.Err() != nil {
+			log.Printf("Clear for '%s' cancelled via context: %v", sheetName, ctx.Err())
+			return "", fmt.Errorf("sheet setup cancelled (clear sheet): %w", ctx.Err())
+		}
 		return "", fmt.Errorf("failed to clear sheet '%s': %w", sheetName, err)
+	}
+	select {
+	case <-ctx.Done():
+		log.Printf("Context cancelled after Clear for '%s': %v", sheetName, ctx.Err())
+		return "", fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
+	default:
 	}
 
 	if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
+		if ctx.Err() != nil {
+			log.Printf("SetHeaders for '%s' cancelled via context: %v", sheetName, ctx.Err())
+			return "", fmt.Errorf("sheet setup cancelled (set headers): %w", ctx.Err())
+		}
 		return "", fmt.Errorf("failed to set headers in sheet '%s': %w", sheetName, err)
 	}
-	log.Printf("All required sheets verified/created and configured.")
+
+	log.Printf("Sheet '%s' verified/created and configured successfully.", sheetName)
 	return sheetName, nil
+}
+
+func (c *JacadClient) fetchPeriodoLetivoNameAsync(ctx context.Context, orgId int, idPeriodoLetivo int) (name string, found bool, err error) {
+	type result struct {
+		name  string
+		found bool
+	}
+	resultChan := make(chan result, 1)
+
+	go func() {
+		log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Starting search for Academic Period ID: %d, OrgID: %d", idPeriodoLetivo, orgId)
+		fetchedName, fetchedFound := c.GetPeriodoNameByID(ctx, orgId, idPeriodoLetivo)
+
+		select {
+		case resultChan <- result{name: fetchedName, found: fetchedFound}:
+			log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Result sent for Academic Period ID: %d. Name: '%s', Found: %t", idPeriodoLetivo, fetchedName, fetchedFound)
+		case <-ctx.Done():
+			log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Context cancelled BEFORE sending result for Academic Period ID: %d. Error: %v", idPeriodoLetivo, ctx.Err())
+		}
+	}()
+
+	log.Printf("fetchPeriodoLetivoNameAsync: Waiting for result or cancellation for Academic Period ID: %d", idPeriodoLetivo)
+	select {
+	case <-ctx.Done():
+		log.Printf("fetchPeriodoLetivoNameAsync: Context cancelled for Academic Period ID: %d. Error: %v", idPeriodoLetivo, ctx.Err())
+		return "", false, ctx.Err()
+	case res := <-resultChan:
+		log.Printf("fetchPeriodoLetivoNameAsync: Result received for Academic Period ID: %d. Name: '%s', Found: %t", idPeriodoLetivo, res.name, res.found)
+
+		return res.name, res.found, nil
+	}
 }

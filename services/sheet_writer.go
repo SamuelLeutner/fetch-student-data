@@ -180,7 +180,6 @@ func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc fun
 	maxAttempts := w.retryMaxAttempts
 
 	for attempt := 0; attempt <= maxAttempts; attempt++ {
-
 		select {
 		case <-ctx.Done():
 			log.Printf("Sheets API operation '%s' cancelled via context before attempt %d: %v", operationDesc, attempt+1, ctx.Err())
@@ -200,7 +199,6 @@ func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc fun
 
 			select {
 			case <-time.After(delay):
-
 			case <-ctx.Done():
 				log.Printf("Sheets API operation '%s' cancelled via context during wait.", ctx.Err())
 				return fmt.Errorf("operation '%s' cancelled via context during retry wait: %w", operationDesc, ctx.Err())

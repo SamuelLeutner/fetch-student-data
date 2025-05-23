@@ -18,17 +18,8 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 		if err := c.Bind().Body(params); err != nil {
 			log.Printf("Handler: Error parsing request body: %v", err)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"status":  "error",
 				"message": "Invalid request body",
 				"details": err.Error(),
-			})
-		}
-
-		if params.IdPeriodoLetivo == 0 {
-			log.Println("Handler: idPeriodoLetivo is missing from request body")
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"status":  "error",
-				"message": "idPeriodoLetivo is required in the request body",
 			})
 		}
 
@@ -36,7 +27,6 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 		defer cancel()
 
 		log.Printf("Handler: Starting enrollment fetch operation for PeriodoLetivo %d...", params.IdPeriodoLetivo)
-
 		errChan := make(chan error, 1)
 
 		go func() {
@@ -55,25 +45,20 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 				if fetchErr != nil {
 					log.Printf("Handler: Fetch goroutine finished with error: %v", fetchErr)
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-						"status":  "error",
 						"message": "Fetch operation was cancelled and ended with error",
 						"details": fetchErr.Error(),
 					})
 				}
 			default:
-
 			}
 			return c.Status(fiber.StatusRequestTimeout).JSON(fiber.Map{
-				"status":  "error",
 				"message": "Fetch operation timed out or was cancelled by client",
 				"details": ctx.Err().Error(),
 			})
-
 		case fetchErr := <-errChan:
 			if fetchErr != nil {
 				log.Printf("Handler: Error during enrollment fetch: %v", fetchErr)
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"status":  "error",
 					"message": "Failed to fetch enrollments",
 					"details": fetchErr.Error(),
 				})
@@ -81,7 +66,6 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 
 			log.Println("Handler: Enrollment fetch completed successfully. Sending OK response.")
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{
-				"status":  "success",
 				"message": "Enrollments fetched and written to sheet successfully!",
 				"sheet":   "Matrículas EAD ATIVA | 20252",
 			})
