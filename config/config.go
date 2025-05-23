@@ -13,15 +13,14 @@ func Init() {
 	fmt.Println("Initializing configuration...")
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-		return
+		log.Printf("Error loading .env file: %v", err)
 	}
 
 	log.Println("Loaded .env file successfully")
 	AppConfig.UserToken = os.Getenv("USER_TOKEN")
 	AppConfig.APIBase = os.Getenv("API_BASE")
 	AppConfig.SpreadsheetID = os.Getenv("SPREADSHEET_ID")
-	AppConfig.CredentialsFilePath = os.Getenv("CREDENTIALS_FILE_PATH")
+	AppConfig.CredentialsJSONBase64 = os.Getenv("GOOGLE_CREDENTIALS_JSON_BASE64")
 }
 
 type Config struct {
@@ -37,7 +36,7 @@ type Config struct {
 	MaxRetries          int
 	AuthTokenExpiry     time.Duration
 	SpreadsheetID       string
-	CredentialsFilePath string
+	CredentialsJSONBase64 string
 	EditalStatus        []string
 }
 
@@ -50,7 +49,7 @@ var AppConfig = Config{
 	UserToken:           "",
 	APIBase:             "",
 	SpreadsheetID:       "",
-	CredentialsFilePath: "",
+	CredentialsJSONBase64: "",
 	Endpoints: map[string]string{
 		"AUTH":            "/auth/token",
 		"ENROLLMENTS":     "/academico/matriculas",
@@ -76,7 +75,6 @@ var AppConfig = Config{
 		"ABERTO",
 		"AGUARDANDO",
 	},
-	// [ATIVA, AGUARDANDO, APROVADO, APROVADO_PARCIALMENTE, CANCELADA, DESISTENTE, INFREQUENTE, REENQUADRADA, REMANEJADA, REPROVADO, TRANCADA, TRANSFERIDA]
 }
 
 func GetOrganizationNameByID(orgID int) string {

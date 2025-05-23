@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -21,26 +22,59 @@ type GoogleSheetsWriter struct {
 	retryDelay       time.Duration
 }
 
-func NewGoogleSheetsWriter(spreadsheetID string, credentialsFilePath string, retryMaxAttempts int, retryDelay time.Duration) (*GoogleSheetsWriter, error) {
-	ctx := context.Background()
-	credentialsJSON, err := os.ReadFile(credentialsFilePath)
+func NewGoogleSheetsWriter(ctx context.Context, spreadsheetID string, CredentialsJSONBase64 string, retryMaxAttempts int, retryDelay time.Duration,) (*GoogleSheetsWriter, error) {
+	var err error
+	var credentialsJSON []byte
+	var credSourceDescription string
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to read credentials file: %w", err)
+	envCredsBase64 := os.Getenv("GOOGLE_CREDENTIALS_JSON_BASE64")
+	if envCredsBase64 != "" {
+		log.Println("INFO: Variável de ambiente GOOGLE_CREDENTIALS_JSON_BASE64 encontrada. Usando-a.")
+		credentialsJSON, err = base64.StdEncoding.DecodeString(envCredsBase64)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao decodificar GOOGLE_CREDENTIALS_JSON_BASE64: %w", err)
+		}
+		credSourceDescription = "variável de ambiente GOOGLE_CREDENTIALS_JSON_BASE64"
+	} else if CredentialsJSONBase64 != "" {
+		log.Printf("INFO: GOOGLE_CREDENTIALS_JSON_BASE64 não definida. Tentando arquivo de credenciais: %s", CredentialsJSONBase64)
+		credentialsJSON, err = os.ReadFile(CredentialsJSONBase64)
+		if err != nil {
+			if os.IsNotExist(err) {
+				log.Printf("WARN: Arquivo de credenciais '%s' não encontrado. Tentará Application Default Credentials.", CredentialsJSONBase64)
+				credentialsJSON = nil
+			} else {
+				return nil, fmt.Errorf("falha ao ler arquivo de credenciais '%s': %w", CredentialsJSONBase64, err)
+			}
+		} else {
+			credSourceDescription = fmt.Sprintf("arquivo ('%s')", CredentialsJSONBase64)
+		}
+	} else {
+		log.Println("INFO: Nem GOOGLE_CREDENTIALS_JSON_BASE64 nem CredentialsJSONBase64 fornecidos. Tentando Application Default Credentials.")
+
+		credSourceDescription = "Application Default Credentials"
 	}
 
-	config, err := google.JWTConfigFromJSON(credentialsJSON, sheets.SpreadsheetsScope)
-	if err != nil {
-		return nil, fmt.Errorf("failed to configure JWT from credentials: %w", err)
+	var sheetsService *sheets.Service
+	if credentialsJSON != nil {
+		log.Printf("INFO: Configurando cliente Google Sheets com credenciais JSON de: %s", credSourceDescription)
+		config, err := google.JWTConfigFromJSON(credentialsJSON, sheets.SpreadsheetsScope)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao configurar JWT a partir das credenciais JSON (fonte: %s): %w", credSourceDescription, err)
+		}
+		client := config.Client(ctx)
+		sheetsService, err = sheets.NewService(ctx, option.WithHTTPClient(client))
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar cliente da API Google Sheets usando JWT (fonte: %s): %w", credSourceDescription, err)
+		}
+	} else {
+		log.Println("INFO: Configurando cliente Google Sheets com Application Default Credentials.")
+		sheetsService, err = sheets.NewService(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar cliente da API Google Sheets usando Application Default Credentials: %w. Verifique se ADC estão configuradas se nenhuma credencial explícita foi fornecida.", err)
+		}
 	}
 
-	client := config.Client(ctx)
-	sheetsService, err := sheets.NewService(ctx, option.WithHTTPClient(client))
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Google Sheets API client: %w", err)
-	}
-
+	log.Println("INFO: Cliente do Google Sheets inicializado com sucesso.")
 	return &GoogleSheetsWriter{
 		sheetsService:    sheetsService,
 		spreadsheetID:    spreadsheetID,
