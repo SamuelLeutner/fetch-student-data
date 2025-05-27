@@ -13,7 +13,7 @@ func SetupRouter(client *services.JacadClient, appConfig *config.Config) *fiber.
 	api := r.Group("/api/v1")
 
 	api.Get("/ping", handlers.HandlePing)
-	api.Post("/fetch-enrollments", handlers.CreateFetchEnrollmentsHandler(client, appConfig)) 
+	api.Get("/fetch-enrollments", handlers.CreateFetchEnrollmentsHandler(client, appConfig)) 
 
 	return r
 }

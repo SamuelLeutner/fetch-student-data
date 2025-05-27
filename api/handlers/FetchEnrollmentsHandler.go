@@ -15,10 +15,10 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 	return func(c fiber.Ctx) error {
 		params := new(requests.FetchEnrollmentsRequest)
 
-		if err := c.Bind().Body(params); err != nil {
+		if err := c.Bind().Query(params); err != nil {
 			log.Printf("Handler: Error parsing request body: %v", err)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"message": "Invalid request body",
+				"message": "Invalid query params",
 				"details": err.Error(),
 			})
 		}
