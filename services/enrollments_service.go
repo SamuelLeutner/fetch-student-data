@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -310,30 +309,13 @@ func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []strin
 	orgName := config.GetOrganizationNameByID(params.OrgId)
 
 	log.Println("Fetching academic period name asynchronously...")
-	periodoLetivoName, periodFound, err := c.fetchPeriodoLetivoNameAsync(ctx, params.OrgId, params.IdPeriodoLetivo)
-	if err != nil {
-		log.Printf("Critical error fetching academic period name: %v. Sheet setup aborted.", err)
-		return "", fmt.Errorf("failed to fetch academic period name (%w)", err)
-	}
-
-	log.Printf("Academic period name fetched: '%s', Found: %t", periodoLetivoName, periodFound)
-
 	var sheetName string
-	if periodFound && orgName != "" {
-		sheetName = fmt.Sprintf("Matrículas %s %s | %s", orgName, params.StatusMatricula, periodoLetivoName)
-	} else {
-		logMessage := "Using default sheet name because "
-		var reasons []string
-		if orgName == "" {
-			reasons = append(reasons, fmt.Sprintf("organization with ID %d was not found", params.OrgId))
-		}
-		if !periodFound {
-			reasons = append(reasons, fmt.Sprintf("academic period with ID %d was not found", params.IdPeriodoLetivo))
-		}
-		log.Printf(logMessage+"%s.", strings.Join(reasons, " and "))
-
-		sheetName = fmt.Sprintf("Matrículas %s %s | Período ID %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
+	if orgName == "" {
+		sheetName = fmt.Sprintf("%s %s | Período ID %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
 	}
+
+	sheetName = fmt.Sprintf("Matrículas %s STATUS: %s | Período ID %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
+
 	log.Printf("Sheet name set to: '%s'", sheetName)
 
 	if err := c.Writer.EnsureSheetExists(ctx, sheetName); err != nil {
@@ -375,35 +357,4 @@ func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []strin
 
 	log.Printf("Sheet '%s' verified/created and configured successfully.", sheetName)
 	return sheetName, nil
-}
-
-func (c *JacadClient) fetchPeriodoLetivoNameAsync(ctx context.Context, orgId int, idPeriodoLetivo int) (name string, found bool, err error) {
-	type result struct {
-		name  string
-		found bool
-	}
-	resultChan := make(chan result, 1)
-
-	go func() {
-		log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Starting search for Academic Period ID: %d, OrgID: %d", idPeriodoLetivo, orgId)
-		fetchedName, fetchedFound := c.GetPeriodoNameByID(ctx, orgId, idPeriodoLetivo)
-
-		select {
-		case resultChan <- result{name: fetchedName, found: fetchedFound}:
-			log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Result sent for Academic Period ID: %d. Name: '%s', Found: %t", idPeriodoLetivo, fetchedName, fetchedFound)
-		case <-ctx.Done():
-			log.Printf("Goroutine fetchPeriodoLetivoNameAsync: Context cancelled BEFORE sending result for Academic Period ID: %d. Error: %v", idPeriodoLetivo, ctx.Err())
-		}
-	}()
-
-	log.Printf("fetchPeriodoLetivoNameAsync: Waiting for result or cancellation for Academic Period ID: %d", idPeriodoLetivo)
-	select {
-	case <-ctx.Done():
-		log.Printf("fetchPeriodoLetivoNameAsync: Context cancelled for Academic Period ID: %d. Error: %v", idPeriodoLetivo, ctx.Err())
-		return "", false, ctx.Err()
-	case res := <-resultChan:
-		log.Printf("fetchPeriodoLetivoNameAsync: Result received for Academic Period ID: %d. Name: '%s', Found: %t", idPeriodoLetivo, res.name, res.found)
-
-		return res.name, res.found, nil
-	}
 }

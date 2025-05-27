@@ -67,7 +67,6 @@ func CreateFetchEnrollmentsHandler(client *services.JacadClient, appConfig *conf
 			log.Println("Handler: Enrollment fetch completed successfully. Sending OK response.")
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{
 				"message": "Enrollments fetched and written to sheet successfully!",
-				"sheet":   "Matrículas EAD ATIVA | 20252",
 			})
 		}
 	}
