@@ -22,7 +22,7 @@ type GoogleSheetsWriter struct {
 	retryDelay       time.Duration
 }
 
-func NewGoogleSheetsWriter(ctx context.Context, spreadsheetID string, CredentialsJSONBase64 string, retryMaxAttempts int, retryDelay time.Duration,) (*GoogleSheetsWriter, error) {
+func NewGoogleSheetsWriter(ctx context.Context, spreadsheetID string, CredentialsJSONBase64 string, retryMaxAttempts int, retryDelay time.Duration) (*GoogleSheetsWriter, error) {
 	var err error
 	var credentialsJSON []byte
 	var credSourceDescription string
@@ -83,76 +83,138 @@ func NewGoogleSheetsWriter(ctx context.Context, spreadsheetID string, Credential
 	}, nil
 }
 
-func (w *GoogleSheetsWriter) Clear(ctx context.Context, sheetName string) error {
-	clearRange := fmt.Sprintf("'%s'!A1:ZZ", sheetName)
-	req := sheets.ClearValuesRequest{}
-	log.Printf("API Sheets: Clearing range '%s' in spreadsheet '%s'...", clearRange, w.spreadsheetID)
-	_, err := w.sheetsService.Spreadsheets.Values.Clear(w.spreadsheetID, clearRange, &req).Context(context.Background()).Do()
+func (w *GoogleSheetsWriter) AppendRows(ctx context.Context, sheetName string, rows [][]interface{}) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	appendRange := fmt.Sprintf("'%s'", sheetName)
+	valueInputOption := "USER_ENTERED"
+	insertDataOption := "INSERT_ROWS"
 
-	if err != nil {
-		return fmt.Errorf("failed to clear range '%s' in spreadsheet '%s': %w", clearRange, w.spreadsheetID, err)
+	appendCallFunc := func() error {
+		log.Printf("API Sheets: Anexando %d linhas na aba '%s'...", len(rows), sheetName)
+		_, err := w.sheetsService.Spreadsheets.Values.Append(w.spreadsheetID, appendRange, &sheets.ValueRange{Values: rows}).
+			ValueInputOption(valueInputOption).
+			InsertDataOption(insertDataOption).
+			Context(ctx).
+			Do()
+		return err
 	}
 
-	log.Printf("API Sheets: Range '%s' cleared successfully.", clearRange)
+	err := w.executeSheetsCall(ctx, appendCallFunc, fmt.Sprintf("anexar linhas na aba '%s'", sheetName))
+	if err != nil {
+		return fmt.Errorf("falha ao anexar %d linhas na aba '%s': %w", len(rows), sheetName, err)
+	}
+	return nil
+}
 
+func (w *GoogleSheetsWriter) OverwriteSheetData(ctx context.Context, sheetName string, headers []string, rows [][]interface{}) error {
+	if err := w.EnsureSheetExists(ctx, sheetName); err != nil {
+		return err
+	}
+
+	if err := w.Clear(ctx, sheetName); err != nil {
+		return err
+	}
+
+	allData := make([][]interface{}, 0, 1+len(rows))
+	if len(headers) > 0 {
+		headerRow := make([]interface{}, len(headers))
+		for i, h := range headers {
+			headerRow[i] = h
+		}
+		allData = append(allData, headerRow)
+	}
+	allData = append(allData, rows...)
+
+	if len(allData) == 0 {
+		log.Printf("INFO: Nenhum dado (cabeçalhos ou linhas) para escrever na aba '%s'.", sheetName)
+		return nil
+	}
+
+	writeRange := fmt.Sprintf("'%s'!A1", sheetName)
+	updateReq := &sheets.ValueRange{Values: allData}
+
+	updateCallFunc := func() error {
+		log.Printf("API Sheets: Escrevendo %d linhas totais (cabeçalhos + dados) na aba '%s'...", len(allData), sheetName)
+		_, err := w.sheetsService.Spreadsheets.Values.Update(w.spreadsheetID, writeRange, updateReq).
+			ValueInputOption("USER_ENTERED").
+			Context(ctx).
+			Do()
+		return err
+	}
+
+	err := w.executeSheetsCall(ctx, updateCallFunc, fmt.Sprintf("escrever dados na aba '%s'", sheetName))
+	if err != nil {
+		return fmt.Errorf("falha ao escrever dados na aba '%s': %w", sheetName, err)
+	}
+
+	log.Printf("API Sheets: Aba '%s' sobrescrita com sucesso com %d linhas totais.", sheetName, len(allData))
+	return nil
+}
+
+func (w *GoogleSheetsWriter) Clear(ctx context.Context, sheetName string) error {
+	clearRange := fmt.Sprintf("'%s'", sheetName)
+	req := sheets.ClearValuesRequest{}
+
+	clearCallFunc := func() error {
+		log.Printf("API Sheets: Limpando a aba '%s' na planilha '%s'...", sheetName, w.spreadsheetID)
+		_, err := w.sheetsService.Spreadsheets.Values.Clear(w.spreadsheetID, clearRange, &req).Context(ctx).Do()
+		return err
+	}
+
+	err := w.executeSheetsCall(ctx, clearCallFunc, fmt.Sprintf("limpar aba '%s'", sheetName))
+	if err != nil {
+		return fmt.Errorf("falha ao limpar a aba '%s' na planilha '%s': %w", sheetName, w.spreadsheetID, err)
+	}
+
+	log.Printf("API Sheets: Aba '%s' limpa com sucesso.", sheetName)
 	return nil
 }
 
 func (w *GoogleSheetsWriter) SetHeaders(ctx context.Context, sheetName string, headers []string) error {
 	writeRange := fmt.Sprintf("'%s'!A1", sheetName)
-	values := [][]interface{}{{}}
-
+	var values [][]interface{}
+	var headerInterfaces []interface{}
 	for _, h := range headers {
-		values[0] = append(values[0], h)
+		headerInterfaces = append(headerInterfaces, h)
+	}
+	values = append(values, headerInterfaces)
+
+	updateReq := &sheets.ValueRange{Values: values}
+	updateCallFunc := func() error {
+		log.Printf("API Sheets: Definindo cabeçalhos em '%s'!A1 na planilha '%s'...", sheetName, w.spreadsheetID)
+		_, err := w.sheetsService.Spreadsheets.Values.Update(w.spreadsheetID, writeRange, updateReq).
+			ValueInputOption("USER_ENTERED").
+			Context(ctx).
+			Do()
+		return err
 	}
 
-	valueInputOption := "USER_ENTERED"
-	log.Printf("API Sheets: Setting headers at '%s'!A1 in spreadsheet '%s' (with context)...", sheetName, w.spreadsheetID)
-	_, err := w.sheetsService.Spreadsheets.Values.Update(w.spreadsheetID, writeRange, &sheets.ValueRange{Values: values}).ValueInputOption(valueInputOption).Context(ctx).Do()
-
+	err := w.executeSheetsCall(ctx, updateCallFunc, fmt.Sprintf("definir cabeçalhos na aba '%s'", sheetName))
 	if err != nil {
-		return fmt.Errorf("failed to set headers at '%s'!A1 in spreadsheet '%s': %w", sheetName, w.spreadsheetID, err)
+		return fmt.Errorf("falha ao definir cabeçalhos em '%s'!A1: %w", sheetName, err)
 	}
 
-	log.Printf("API Sheets: Headers set successfully in sheet '%s'.", sheetName)
-	return nil
-}
-
-func (w *GoogleSheetsWriter) AppendRows(ctx context.Context, sheetName string, rows [][]interface{}) error {
-	if len(rows) == 0 {
-		return nil
-	}
-
-	appendRange := fmt.Sprintf("'%s'", sheetName)
-	valueInputOption := "USER_ENTERED"
-	insertDataOption := "INSERT_ROWS"
-	log.Printf("API Sheets: Appending %d rows to sheet '%s' in spreadsheet '%s'...", len(rows), sheetName, w.spreadsheetID)
-	_, err := w.sheetsService.Spreadsheets.Values.Append(w.spreadsheetID, appendRange, &sheets.ValueRange{Values: rows}).ValueInputOption(valueInputOption).InsertDataOption(insertDataOption).Context(context.Background()).Do()
-
-	if err != nil {
-		return fmt.Errorf("failed to append %d rows to sheet '%s' in spreadsheet '%s': %w", len(rows), sheetName, w.spreadsheetID, err)
-	}
-
-	log.Printf("API Sheets: %d rows appended successfully to sheet '%s'.", len(rows), sheetName)
-
+	log.Printf("API Sheets: Cabeçalhos definidos com sucesso na aba '%s'.", sheetName)
 	return nil
 }
 
 func (w *GoogleSheetsWriter) EnsureSheetExists(ctx context.Context, sheetName string) error {
-	log.Printf("API Sheets: Checking if sheet '%s' exists in spreadsheet '%s' (with context)...", sheetName, w.spreadsheetID)
-	spreedsheet, err := w.sheetsService.Spreadsheets.Get(w.spreadsheetID).Fields("sheets.properties.title").Context(ctx).Do()
+	log.Printf("API Sheets: Verificando se a aba '%s' existe na planilha '%s'...", sheetName, w.spreadsheetID)
+	spreadsheet, err := w.sheetsService.Spreadsheets.Get(w.spreadsheetID).Fields("sheets.properties.title").Context(ctx).Do()
 	if err != nil {
-		return fmt.Errorf("failed to get spreadsheet details for '%s' to check for sheet '%s': %w", w.spreadsheetID, sheetName, err)
+		return fmt.Errorf("falha ao obter detalhes da planilha '%s' para verificar a aba '%s': %w", w.spreadsheetID, sheetName, err)
 	}
 
-	for _, sheet := range spreedsheet.Sheets {
+	for _, sheet := range spreadsheet.Sheets {
 		if sheet.Properties.Title == sheetName {
-			log.Printf("API Sheets: Sheet '%s' already exists in spreadsheet '%s'.", sheetName, w.spreadsheetID)
+			log.Printf("API Sheets: A aba '%s' já existe na planilha '%s'.", sheetName, w.spreadsheetID)
 			return nil
 		}
 	}
 
-	log.Printf("API Sheets: Sheet '%s' doesn't exist in spreadsheet '%s'. Creating...", sheetName, w.spreadsheetID)
+	log.Printf("API Sheets: A aba '%s' não existe na planilha '%s'. Criando...", sheetName, w.spreadsheetID)
 	addSheetRequest := &sheets.Request{
 		AddSheet: &sheets.AddSheetRequest{
 			Properties: &sheets.SheetProperties{
@@ -166,47 +228,18 @@ func (w *GoogleSheetsWriter) EnsureSheetExists(ctx context.Context, sheetName st
 	}
 
 	batchUpdateCallFunc := func() error {
-		log.Printf("API Sheets: Performing BatchUpdate to create sheet '%s' in spreadsheet '%s' (with context)...", sheetName, w.spreadsheetID)
+		log.Printf("API Sheets: Executando BatchUpdate para criar a aba '%s'...", sheetName)
 		_, err := w.sheetsService.Spreadsheets.BatchUpdate(w.spreadsheetID, batchUpdateRequest).Context(ctx).Do()
 		return err
 	}
 
-	err = w.executeSheetsCall(ctx, batchUpdateCallFunc, fmt.Sprintf("create sheet '%s' via BatchUpdate", sheetName))
+	err = w.executeSheetsCall(ctx, batchUpdateCallFunc, fmt.Sprintf("criar aba '%s'", sheetName))
 	if err != nil {
-		return fmt.Errorf("failed to create sheet '%s' in spreadsheet '%s': %w", sheetName, w.spreadsheetID, err)
+		return fmt.Errorf("falha ao criar a aba '%s' na planilha '%s': %w", sheetName, w.spreadsheetID, err)
 	}
 
-	log.Printf("API Sheets: Sheet '%s' created successfully in spreadsheet '%s'.", sheetName, w.spreadsheetID)
-
+	log.Printf("API Sheets: Aba '%s' criada com sucesso.", sheetName)
 	return nil
-}
-
-func isRetryableSheetsError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	apiErr, ok := err.(*googleapi.Error)
-	if !ok {
-		return false
-	}
-
-	if apiErr.Code >= 500 && apiErr.Code < 600 {
-		log.Printf("Google API 5xx error (%d): %s. Retrying...", apiErr.Code, apiErr.Message)
-		return true
-	}
-
-	if apiErr.Code == 429 {
-		log.Printf("Google API 429 error (Quota Limit). Retrying...")
-		return true
-	}
-
-	if apiErr.Code == 403 && strings.Contains(strings.ToLower(apiErr.Message), "rateLimitExceeded") {
-		log.Printf("Google API 403 error (Forbidden / Quota Exceeded). Retrying...")
-		return true
-	}
-
-	return false
 }
 
 func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc func() error, operationDesc string) error {
@@ -216,8 +249,8 @@ func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc fun
 	for attempt := 0; attempt <= maxAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
-			log.Printf("Sheets API operation '%s' cancelled via context before attempt %d: %v", operationDesc, attempt+1, ctx.Err())
-			return fmt.Errorf("operation '%s' cancelled via context: %w", operationDesc, ctx.Err())
+			log.Printf("Operação da API Sheets '%s' cancelada via contexto antes da tentativa %d: %v", operationDesc, attempt+1, ctx.Err())
+			return fmt.Errorf("operação '%s' cancelada via contexto: %w", operationDesc, ctx.Err())
 		default:
 		}
 
@@ -228,20 +261,39 @@ func (w *GoogleSheetsWriter) executeSheetsCall(ctx context.Context, callFunc fun
 
 		if isRetryableSheetsError(err) && attempt < maxAttempts {
 			delay := baseDelay * time.Duration(1<<attempt)
-
-			log.Printf("Sheets API operation '%s' failed (attempt %d/%d): %v. Waiting %s before retrying...", operationDesc, attempt+1, maxAttempts+1, err, delay)
-
+			log.Printf("Operação da API Sheets '%s' falhou (tentativa %d/%d): %v. Aguardando %s antes de tentar novamente...", operationDesc, attempt+1, maxAttempts+1, err, delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				log.Printf("Sheets API operation '%s' cancelled via context during wait.", ctx.Err())
-				return fmt.Errorf("operation '%s' cancelled via context during retry wait: %w", operationDesc, ctx.Err())
+				log.Printf("Operação da API Sheets '%s' cancelada via contexto durante a espera.", operationDesc)
+				return fmt.Errorf("operação '%s' cancelada via contexto durante a espera da nova tentativa: %w", operationDesc, ctx.Err())
 			}
 		} else {
-
-			return fmt.Errorf("fatal Sheets API operation '%s' failure after %d attempts: %w", operationDesc, attempt+1, err)
+			return fmt.Errorf("falha fatal na operação da API Sheets '%s' após %d tentativas: %w", operationDesc, attempt+1, err)
 		}
 	}
+	return fmt.Errorf("executeSheetsCall atingiu um estado inesperado para a operação: %s", operationDesc)
+}
 
-	return fmt.Errorf("executeSheetsCall reached unexpected state for operation: %s", operationDesc)
+func isRetryableSheetsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	apiErr, ok := err.(*googleapi.Error)
+	if !ok {
+		return false
+	}
+	if apiErr.Code >= 500 && apiErr.Code < 600 {
+		log.Printf("Google API 5xx error (%d): %s. Tentando novamente...", apiErr.Code, apiErr.Message)
+		return true
+	}
+	if apiErr.Code == 429 {
+		log.Printf("Google API 429 error (Resource Exhausted / Quota Limit). Tentando novamente...")
+		return true
+	}
+	if apiErr.Code == 403 && strings.Contains(strings.ToLower(apiErr.Message), "ratelimitexceeded") {
+		log.Printf("Google API 403 error (Rate Limit Exceeded). Tentando novamente...")
+		return true
+	}
+	return false
 }

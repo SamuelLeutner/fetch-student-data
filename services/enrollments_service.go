@@ -34,9 +34,11 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 		fetchParams["statusMatricula"] = params.StatusMatricula
 	}
 
-	sheetName, err := c.setupEnrollmentSheets(ctx, headers, params)
-	if err != nil {
-		return fmt.Errorf("failed to setup enrollment sheets: %w", err)
+	sheetName := c.determineSheetName(params)
+	log.Printf("Sheet name determined: '%s'", sheetName)
+
+	if err := c.prepareSheet(ctx, sheetName, headers); err != nil {
+		return fmt.Errorf("failed to prepare sheet '%s': %w", sheetName, err)
 	}
 
 	log.Println("Fetching initial page (0) to get total pages...")
@@ -112,6 +114,28 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 
 	log.Printf("Process completed! Total: %d enrollments", totalProcessed)
 	return nil
+}
+
+func (c *JacadClient) prepareSheet(ctx context.Context, sheetName string, headers []string) error {
+	if err := c.Writer.EnsureSheetExists(ctx, sheetName); err != nil {
+		return fmt.Errorf("failed to ensure sheet exists: %w", err)
+	}
+	if err := c.Writer.Clear(ctx, sheetName); err != nil {
+		return fmt.Errorf("failed to clear sheet: %w", err)
+	}
+	if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
+		return fmt.Errorf("failed to set headers: %w", err)
+	}
+	log.Printf("Sheet '%s' prepared successfully.", sheetName)
+	return nil
+}
+
+func (c *JacadClient) determineSheetName(params *requests.FetchEnrollmentsRequest) string {
+	orgName := config.GetOrganizationNameByID(params.OrgId)
+	if orgName == "" {
+		orgName = config.AppConfig.DefaultOrgSheet
+	}
+	return fmt.Sprintf("Matrículas %s STATUS: %s | Período ID %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
 }
 
 func (c *JacadClient) logProgress(startTime time.Time, currentPage, totalPages, totalProcessed int) {
@@ -302,59 +326,4 @@ func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []model
 	}
 	log.Println("All batch data processed for writing")
 	return nil
-}
-
-func (c *JacadClient) setupEnrollmentSheets(ctx context.Context, headers []string, params *requests.FetchEnrollmentsRequest) (string, error) {
-	log.Printf("Starting setupEnrollmentSheets for OrgID: %d, AcademicPeriodID: %d, EnrollmentStatus: %s", params.OrgId, params.IdPeriodoLetivo, params.StatusMatricula)
-	orgName := config.GetOrganizationNameByID(params.OrgId)
-
-	log.Println("Fetching academic period name asynchronously...")
-	var sheetName string
-	if orgName == "" {
-		sheetName = fmt.Sprintf("%s %s | Período ID %d", config.AppConfig.DefaultOrgSheet, params.StatusMatricula, params.IdPeriodoLetivo)
-	}
-
-	sheetName = fmt.Sprintf("Matrículas %s STATUS: %s | Período ID %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
-
-	log.Printf("Sheet name set to: '%s'", sheetName)
-
-	if err := c.Writer.EnsureSheetExists(ctx, sheetName); err != nil {
-		if ctx.Err() != nil {
-			log.Printf("EnsureSheetExists for '%s' cancelled via context: %v", sheetName, ctx.Err())
-			return "", fmt.Errorf("sheet setup cancelled (ensure sheet): %w", ctx.Err())
-		}
-		return "", fmt.Errorf("failed to ensure sheet '%s' exists: %w", sheetName, err)
-	}
-
-	select {
-	case <-ctx.Done():
-		log.Printf("Context cancelled after EnsureSheetExists for '%s': %v", sheetName, ctx.Err())
-		return "", fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
-	default:
-	}
-
-	if err := c.Writer.Clear(ctx, sheetName); err != nil {
-		if ctx.Err() != nil {
-			log.Printf("Clear for '%s' cancelled via context: %v", sheetName, ctx.Err())
-			return "", fmt.Errorf("sheet setup cancelled (clear sheet): %w", ctx.Err())
-		}
-		return "", fmt.Errorf("failed to clear sheet '%s': %w", sheetName, err)
-	}
-	select {
-	case <-ctx.Done():
-		log.Printf("Context cancelled after Clear for '%s': %v", sheetName, ctx.Err())
-		return "", fmt.Errorf("sheet setup cancelled: %w", ctx.Err())
-	default:
-	}
-
-	if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
-		if ctx.Err() != nil {
-			log.Printf("SetHeaders for '%s' cancelled via context: %v", sheetName, ctx.Err())
-			return "", fmt.Errorf("sheet setup cancelled (set headers): %w", ctx.Err())
-		}
-		return "", fmt.Errorf("failed to set headers in sheet '%s': %w", sheetName, err)
-	}
-
-	log.Printf("Sheet '%s' verified/created and configured successfully.", sheetName)
-	return sheetName, nil
 }
