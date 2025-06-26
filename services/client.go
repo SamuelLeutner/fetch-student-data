@@ -21,6 +21,7 @@ type SheetWriter interface {
 	Clear(ctx context.Context, sheetName string) error
 	SetHeaders(ctx context.Context, sheetName string, headers []string) error
 	AppendRows(ctx context.Context, sheetName string, rows [][]interface{}) error
+	OverwriteSheetData(ctx context.Context, sheetName string, headers []string, rows [][]interface{}) error 
 }
 
 type JacadClient struct {

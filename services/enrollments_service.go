@@ -37,18 +37,12 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 	sheetName := c.determineSheetName(params)
 	log.Printf("Sheet name determined: '%s'", sheetName)
 
-	if err := c.prepareSheet(ctx, sheetName, headers); err != nil {
-		return fmt.Errorf("failed to prepare sheet '%s': %w", sheetName, err)
-	}
-
 	log.Println("Fetching initial page (0) to get total pages...")
 	firstPageElements, Page, err := c.FetchPage(ctx, c.Config.Endpoints["ENROLLMENTS"], 0, c.Config.PageSize, fetchParams)
-
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("fetching initial page cancelled: %w", ctx.Err())
 		}
-
 		return fmt.Errorf("failed to fetch initial page to get total: %w", err)
 	}
 
@@ -58,97 +52,91 @@ func (c *JacadClient) FetchEnrollmentsFiltered(ctx context.Context, params *requ
 
 	totalPages := Page.TotalPages
 	totalElements := Page.TotalElements
-
 	log.Printf("Initial page fetched. Total pages: %d (Total elements: %d)", totalPages, totalElements)
 
 	if totalPages == 0 || totalElements == 0 {
 		log.Println("Total pages or elements is zero. No enrollments to process.")
-
-		return nil
+		return c.Writer.OverwriteSheetData(ctx, sheetName, headers, [][]interface{}{})
 	}
 
-	log.Printf("Writing %d enrollments from the initial page (0) to sheets", len(firstPageElements))
-	if writeErr := c.writeEnrollmentsToSheets(ctx, firstPageElements, sheetName, headers); writeErr != nil {
-		log.Printf("Error writing initial page data: %v", writeErr)
-	}
-	totalProcessed := len(firstPageElements)
-	currentPage := 1
+	allEnrollments := make([]models.Enrollment, 0, totalElements)
+	allEnrollments = append(allEnrollments, firstPageElements...)
 
-	for currentPage < totalPages {
-		select {
-		case <-ctx.Done():
-			log.Printf("Process cancelled via context before starting batch from page %d: %v", currentPage, ctx.Err())
-			log.Printf("Process cancelled. Total enrollments processed before cancellation: %d", totalProcessed)
-			return fmt.Errorf("filtered enrollment fetch cancelled: %w", ctx.Err())
-		default:
-		}
-
-		remainingPages := totalPages - currentPage
+	if totalPages > 1 {
+		remainingPages := totalPages - 1
 		batchSize := c.Config.MaxPagesPerBatch
 		if remainingPages < batchSize {
 			batchSize = remainingPages
 		}
 
-		log.Printf("Processing batch: pages %d to %d (batch size: %d) (with context and filters)...", currentPage, currentPage+batchSize-1, batchSize)
-
-		batchData, err := c.processBatchEnrollmentsFiltered(ctx, currentPage, batchSize, fetchParams)
-
-		if err != nil {
-			log.Printf("Failed to process batch of pages %d-%d: %v. Moving to next batch.", currentPage, currentPage+batchSize-1, err)
-
-			currentPage += batchSize
-		} else {
-			if len(batchData) > 0 {
-				log.Printf("Writing %d enrollments from batch to sheets (with context)...", len(batchData))
-
-				if writeErr := c.writeEnrollmentsToSheets(ctx, batchData, sheetName, headers); writeErr != nil {
-					log.Printf("Error writing batch data: %v", writeErr)
-				}
+		currentPage := 1
+		for currentPage < totalPages {
+			select {
+			case <-ctx.Done():
+				log.Printf("Process cancelled via context before starting batch from page %d: %v", currentPage, ctx.Err())
+				return fmt.Errorf("filtered enrollment fetch cancelled: %w", ctx.Err())
+			default:
 			}
-			totalProcessed += len(batchData)
+			
+			batchData, err := c.processBatchEnrollmentsFiltered(ctx, currentPage, batchSize, fetchParams)
+			if err != nil {
+				log.Printf("Failed to process batch of pages %d-%d: %v. Moving to next batch.", currentPage, currentPage+batchSize-1, err)
+			} else {
+				allEnrollments = append(allEnrollments, batchData...)
+			}
 			currentPage += batchSize
+			c.logProgress(startTime, currentPage, totalPages, len(allEnrollments))
 		}
-
-		c.logProgress(startTime, currentPage, totalPages, totalProcessed)
 	}
 
-	log.Printf("Process completed! Total: %d enrollments", totalProcessed)
+	log.Printf("All %d enrollments fetched. Writing to sheet '%s'...", len(allEnrollments), sheetName)
+	if err := c.writeAllEnrollmentsToSheet(ctx, allEnrollments, sheetName, headers); err != nil {
+		return fmt.Errorf("failed to write all enrollments to sheet: %w", err)
+	}
+
+	log.Printf("Process completed! Total: %d enrollments written to sheet '%s'.", len(allEnrollments), sheetName)
 	return nil
 }
 
-func (c *JacadClient) prepareSheet(ctx context.Context, sheetName string, headers []string) error {
-	if err := c.Writer.EnsureSheetExists(ctx, sheetName); err != nil {
-		return fmt.Errorf("failed to ensure sheet exists: %w", err)
+func (c *JacadClient) writeAllEnrollmentsToSheet(ctx context.Context, data []models.Enrollment, sheetName string, headers []string) error {
+	rows := make([][]interface{}, len(data))
+	for i, item := range data {
+		rows[i] = make([]interface{}, len(headers))
+		for j, field := range headers {
+			switch field {
+			case "idMatricula":
+				rows[i][j] = item.IdMatricula
+			case "aluno":
+				rows[i][j] = utils.GetStringOrEmpty(item.Aluno)
+			case "ra":
+				rows[i][j] = utils.GetStringOrEmpty(item.RA)
+			case "curso":
+				rows[i][j] = utils.GetStringOrEmpty(item.Curso)
+			case "turma":
+				rows[i][j] = utils.GetStringOrEmpty(item.Turma)
+			case "status":
+				rows[i][j] = utils.GetStringOrEmpty(item.Status)
+			case "periodoLetivo":
+				rows[i][j] = utils.GetStringOrEmpty(item.PeriodoLetivo)
+			case "unidadeFisica":
+				rows[i][j] = utils.GetStringOrEmpty(item.UnidadeFisica)
+			case "organizacao":
+				rows[i][j] = utils.GetStringOrEmpty(item.Organizacao)
+			case "idOrg":
+				rows[i][j] = item.OrgID
+			case "dataMatricula":
+				rows[i][j] = utils.GetTimeOrNilDate(item.DataMatricula)
+			case "dataAtivacao":
+				rows[i][j] = utils.GetTimeOrNilDate(item.DataAtivacao)
+			case "dataCadastro":
+				rows[i][j] = utils.GetTimeOrNilDate(item.DataCadastro)
+			default:
+				rows[i][j] = ""
+			}
+		}
 	}
-	if err := c.Writer.Clear(ctx, sheetName); err != nil {
-		return fmt.Errorf("failed to clear sheet: %w", err)
-	}
-	if err := c.Writer.SetHeaders(ctx, sheetName, headers); err != nil {
-		return fmt.Errorf("failed to set headers: %w", err)
-	}
-	log.Printf("Sheet '%s' prepared successfully.", sheetName)
-	return nil
-}
 
-func (c *JacadClient) determineSheetName(params *requests.FetchEnrollmentsRequest) string {
-	orgName := config.GetOrganizationNameByID(params.OrgId)
-	if orgName == "" {
-		orgName = config.AppConfig.DefaultOrgSheet
-	}
-	return fmt.Sprintf("Matrículas %s STATUS: %s | Período ID %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
-}
-
-func (c *JacadClient) logProgress(startTime time.Time, currentPage, totalPages, totalProcessed int) {
-	elapsed := time.Since(startTime).Seconds()
-	progress := 0.0
-
-	if totalPages > 0 {
-
-		progress = float64(currentPage) / float64(totalPages) * 100
-	}
-
-	log.Printf("Pages (batches started): %d/%d (%.1f%%) | Enrollments Processed: %d | Time: %.1fs",
-		currentPage, totalPages, progress, totalProcessed, elapsed)
+	return c.Writer.OverwriteSheetData(ctx, sheetName, headers, rows)
 }
 
 func (c *JacadClient) processBatchEnrollmentsFiltered(ctx context.Context, startPage, count int, params map[string]string) ([]models.Enrollment, error) {
@@ -246,84 +234,24 @@ func (c *JacadClient) processBatchEnrollmentsFiltered(ctx context.Context, start
 	return allData, nil
 }
 
-func (c *JacadClient) writeEnrollmentsToSheets(ctx context.Context, data []models.Enrollment, sheetName string, headers []string) error {
-	if len(data) == 0 {
-		log.Println("No enrollments to write.")
-		return nil
+
+func (c *JacadClient) determineSheetName(params *requests.FetchEnrollmentsRequest) string {
+	orgName := config.GetOrganizationNameByID(params.OrgId)
+	if orgName == "" {
+		orgName = config.AppConfig.DefaultOrgSheet
 	}
-	log.Printf("Organizing %d enrollments by organization for writing...", len(data))
+	return fmt.Sprintf("Matrículas %s STATUS: %s | Período ID %d", orgName, params.StatusMatricula, params.IdPeriodoLetivo)
+}
 
-	buffersBySheetName := make(map[string][][]interface{})
-	orgCounts := make(map[string]int)
+func (c *JacadClient) logProgress(startTime time.Time, currentPage, totalPages, totalProcessed int) {
+	elapsed := time.Since(startTime).Seconds()
+	progress := 0.0
 
-	for _, item := range data {
-		select {
-		case <-ctx.Done():
-			log.Printf("Context cancelled during data organization for writing: %v", ctx.Err())
-			return fmt.Errorf("data organization cancelled: %w", ctx.Err())
-		default:
-		}
+	if totalPages > 0 {
 
-		if _, exists := buffersBySheetName[sheetName]; !exists {
-			buffersBySheetName[sheetName] = make([][]interface{}, 0)
-		}
-		if _, exists := orgCounts[sheetName]; !exists {
-			orgCounts[sheetName] = 0
-		}
-		row := make([]interface{}, len(headers))
-
-		for i, field := range headers {
-			switch field {
-			case "idMatricula":
-				row[i] = item.IdMatricula
-			case "aluno":
-				row[i] = utils.GetStringOrEmpty(item.Aluno)
-			case "ra":
-				row[i] = utils.GetStringOrEmpty(item.RA)
-			case "curso":
-				row[i] = utils.GetStringOrEmpty(item.Curso)
-			case "turma":
-				row[i] = utils.GetStringOrEmpty(item.Turma)
-			case "status":
-				row[i] = utils.GetStringOrEmpty(item.Status)
-			case "periodoLetivo":
-				row[i] = utils.GetStringOrEmpty(item.PeriodoLetivo)
-			case "unidadeFisica":
-				row[i] = utils.GetStringOrEmpty(item.UnidadeFisica)
-			case "organizacao":
-				row[i] = utils.GetStringOrEmpty(item.Organizacao)
-			case "idOrg":
-				row[i] = item.OrgID
-			case "dataMatricula":
-				row[i] = utils.GetTimeOrNilDate(item.DataMatricula)
-			case "dataAtivacao":
-				row[i] = utils.GetTimeOrNilDate(item.DataAtivacao)
-			case "dataCadastro":
-				row[i] = utils.GetTimeOrNilDate(item.DataCadastro)
-			default:
-				row[i] = ""
-			}
-		}
-		buffersBySheetName[sheetName] = append(buffersBySheetName[sheetName], row)
-		orgCounts[sheetName]++
+		progress = float64(currentPage) / float64(totalPages) * 100
 	}
 
-	for sheetName, rows := range buffersBySheetName {
-		if len(rows) > 0 {
-			select {
-			case <-ctx.Done():
-				log.Printf("Context cancelled before writing to sheet '%s': %v", sheetName, ctx.Err())
-				return fmt.Errorf("writing to sheet '%s' cancelled: %w", sheetName, ctx.Err())
-			default:
-			}
-			log.Printf("Writing %d rows to sheet '%s' (with context)...", len(rows), sheetName)
-			if err := c.Writer.AppendRows(ctx, sheetName, rows); err != nil {
-				log.Printf("Error writing data to sheet '%s': %v", sheetName, err)
-			} else {
-				log.Printf("Writing to sheet '%s' completed.", sheetName)
-			}
-		}
-	}
-	log.Println("All batch data processed for writing")
-	return nil
+	log.Printf("Pages (batches started): %d/%d (%.1f%%) | Enrollments Processed: %d | Time: %.1fs",
+		currentPage, totalPages, progress, totalProcessed, elapsed)
 }
